@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  wilkloud-engine:
+    image: tiangolo/uvicorn-gunicorn-fastapi:python3.10
+    container_name: wilkloud-engine
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    ports:
+      - "8000:80"
