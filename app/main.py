@@ -2,6 +2,11 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 import os
 from fastapi.middleware.cors import CORSMiddleware
+import httpx
+from dotenv import load_dotenv
+from os import getenv
+
+load_dotenv()
 
 app = FastAPI()
 
@@ -14,28 +19,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MEDIA_ROOT = "media/movies"
+SONARR_URL = "http://localhost:8989"
+SONARR_API_KEY = getenv("SONARR_API_KEY")
+if not SONARR_API_KEY:
+    raise RuntimeError("SONARR_API_KEY is not set in environment variables.")
+
+headers = {
+    "X-Api-Key": SONARR_API_KEY
+}
+
+async def fetch_sonarr_series():
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{SONARR_URL}/api/v3/series", headers=headers)
+        response.raise_for_status()
+        return response.json()
+
 WHITELISTED_IPS = ["127.0.0.1", "192.168.0.48", "172.17.46.123"]
-
-# Build a movie list on startup
-MOVIES = {}
-
-@app.on_event("startup")
-async def scan_movies():
-    global MOVIES
-    MOVIES = {}
-    movie_id = 1
-    for folder in os.listdir(MEDIA_ROOT):
-        folder_path = os.path.join(MEDIA_ROOT, folder)
-        if os.path.isdir(folder_path):
-            for file in os.listdir(folder_path):
-                if file.endswith((".mp4", ".mkv", ".avi")):
-                    MOVIES[movie_id] = {
-                        "id": movie_id,
-                        "title": folder,
-                        "file_path": os.path.join(folder_path, file)
-                    }
-                    movie_id += 1
 
 @app.middleware("http")
 async def ip_whitelist(request: Request, call_next):
@@ -45,13 +44,30 @@ async def ip_whitelist(request: Request, call_next):
     response = await call_next(request)
     return response
 
-@app.get("/movies")
-async def list_movies():
-    return list(MOVIES.values())
+@app.get("/shows")
+async def list_shows():
+    return await fetch_sonarr_series()
 
-@app.get("/media/{movie_id}")
-async def get_media(movie_id: int):
-    movie = MOVIES.get(movie_id)
-    if not movie:
-        raise HTTPException(status_code=404, detail="Movie not found")
-    return FileResponse(movie["file_path"], media_type="video/mp4")
+@app.get("/shows/{show_id}/episodes")
+async def list_episodes(show_id: int):
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{SONARR_URL}/api/v3/episode?seriesId={show_id}", headers=headers)
+        if response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Show not found or no episodes available")
+        response.raise_for_status()
+        episodes = response.json()
+        episodes_with_files = [ep for ep in episodes if ep.get("hasFile")]
+        return episodes_with_files
+
+@app.get("/episodes/{episode_id}")
+async def get_episode(episode_id: int):
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{SONARR_URL}/api/episodefile/{episode_id}", headers=headers)
+        if response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Episode not found")
+        response.raise_for_status()
+        episode_file = response.json()
+        file_path = episode_file.get("path")
+        if not file_path or not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="File not found")
+        return FileResponse(file_path, media_type="video/mp4")
