@@ -5,11 +5,16 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 from dotenv import load_dotenv
 from os import getenv
+from starlette.responses import StreamingResponse
+import aiofiles
 
 load_dotenv()
 
-app = FastAPI()
-
+app = FastAPI(
+    title="Wilkloud Media Server API",
+    description="API to interface with Sonarr for listing shows, episodes, and streaming media files.",
+    version="1.0.0"
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -44,30 +49,96 @@ async def ip_whitelist(request: Request, call_next):
     response = await call_next(request)
     return response
 
-@app.get("/shows")
+@app.get("/shows", summary="List all shows", description="Fetches all shows from the configured Sonarr instance.")
 async def list_shows():
     return await fetch_sonarr_series()
 
-@app.get("/shows/{show_id}/episodes")
-async def list_episodes(show_id: int):
+@app.get("/shows/{series_id}/episodes", summary="Get all episodes for a series", description="Fetches all episodes for a given series ID.")
+async def get_combined_episode_data(series_id: int):
     async with httpx.AsyncClient() as client:
-        response = await client.get(f"{SONARR_URL}/api/v3/episode?seriesId={show_id}", headers=headers)
-        if response.status_code == 404:
-            raise HTTPException(status_code=404, detail="Show not found or no episodes available")
-        response.raise_for_status()
-        episodes = response.json()
-        episodes_with_files = [ep for ep in episodes if ep.get("hasFile")]
-        return episodes_with_files
+        ep_response = await client.get(f"{SONARR_URL}/api/v3/episode?seriesId={series_id}", headers=headers)
+        file_response = await client.get(f"{SONARR_URL}/api/v3/episodeFile?seriesId={series_id}", headers=headers)
 
-@app.get("/episodes/{episode_id}")
-async def get_episode(episode_id: int):
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"{SONARR_URL}/api/episodefile/{episode_id}", headers=headers)
-        if response.status_code == 404:
-            raise HTTPException(status_code=404, detail="Episode not found")
-        response.raise_for_status()
-        episode_file = response.json()
-        file_path = episode_file.get("path")
-        if not file_path or not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail="File not found")
-        return FileResponse(file_path, media_type="video/mp4")
+        if ep_response.status_code == 404 or file_response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Episode or file data not found")
+        ep_response.raise_for_status()
+        file_response.raise_for_status()
+
+        episodes = ep_response.json()
+        episode_files = {f["id"]: f for f in file_response.json()}
+
+        combined = []
+        for ep in episodes:
+            if not ep.get("hasFile"):
+                continue
+            file_data = episode_files.get(ep["episodeFileId"])
+            if not file_data:
+                continue
+
+            combined.append({
+                "season": ep["seasonNumber"],
+                "episode": ep["episodeNumber"],
+                "title": ep["title"],
+                "airDate": ep["airDate"],
+                "overview": ep["overview"],
+                "filePath": file_data["path"],
+                "relativePath": file_data["relativePath"],
+                "size": file_data["size"],
+                "quality": file_data["quality"]["quality"]["name"],
+                "videoCodec": file_data["mediaInfo"]["videoCodec"],
+                "audioCodec": file_data["mediaInfo"]["audioCodec"],
+                "audioChannels": file_data["mediaInfo"]["audioChannels"],
+                "resolution": file_data["mediaInfo"]["resolution"],
+                "runtime": file_data["mediaInfo"]["runTime"],
+                "subtitles": file_data["mediaInfo"]["subtitles"],
+            })
+
+        return sorted(combined, key=lambda x: (x["season"], x["episode"]))
+
+@app.get("/stream/{series_id}/{season}/{file_name}", summary="Stream media file", description="Streams a media file using HTTP byte-range support.")
+async def stream_file(series_id: int, season: str, file_name: str, request: Request):
+    media_root = "/Users/jason/Media/tv"
+    file_path = os.path.join(media_root, str(series_id), season, file_name)
+
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    file_size = os.path.getsize(file_path)
+    range_header = request.headers.get("range")
+
+    def parse_range(range_header: str):
+        units, _, range_spec = range_header.partition("=")
+        start_str, _, end_str = range_spec.partition("-")
+        start = int(start_str)
+        end = int(end_str) if end_str else file_size - 1
+        return start, end
+
+    if range_header:
+        start, end = parse_range(range_header)
+        length = end - start + 1
+
+        async def content():
+            async with aiofiles.open(file_path, 'rb') as f:
+                await f.seek(start)
+                yield await f.read(length)
+
+        headers = {
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(length),
+            "Content-Type": "video/mp4"
+        }
+
+        return StreamingResponse(content(), status_code=206, headers=headers)
+
+    else:
+        async def content():
+            async with aiofiles.open(file_path, 'rb') as f:
+                yield await f.read()
+
+        headers = {
+            "Content-Length": str(file_size),
+            "Content-Type": "video/mp4"
+        }
+
+        return StreamingResponse(content(), headers=headers)
