@@ -26,6 +26,8 @@ redis = Redis.from_url(REDIS_URL, decode_responses=True)
 # Cache configuration
 CACHE_TTL = timedelta(minutes=30)  # Cache for 30 minutes
 CACHE_KEY = "sonarr_series"
+EPISODE_CACHE_KEY = "sonarr_episodes_{}"  # Format with series_id
+EPISODE_FILE_CACHE_KEY = "sonarr_episode_files_{}"  # Format with series_id
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,7 +37,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SONARR_URL = "http://localhost:8989"
+SONARR_URL = getenv("SONARR_URL", "http://localhost:8989")
 SONARR_API_KEY = getenv("SONARR_API_KEY")
 if not SONARR_API_KEY:
     raise RuntimeError("SONARR_API_KEY is not set in environment variables.")
@@ -48,6 +50,7 @@ async def fetch_sonarr_series():
     # Try to get from cache first
     cached_data = await redis.get(CACHE_KEY)
     if cached_data:
+        print("Cache hit for shows")
         return json.loads(cached_data)
 
     # If not in cache, fetch from Sonarr
@@ -59,6 +62,28 @@ async def fetch_sonarr_series():
         # Cache the response
         await redis.setex(
             CACHE_KEY,
+            CACHE_TTL,
+            json.dumps(data)
+        )
+        
+        return data
+
+async def fetch_show_details(series_id: int):
+    # Try to get from cache first
+    cached_data = await redis.get(f"sonarr_show_{series_id}")
+    if cached_data:
+        print("Cache hit for individual show")
+        return json.loads(cached_data)
+
+    # If not in cache, fetch from Sonarr
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{SONARR_URL}/api/v3/series/{series_id}", headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        
+        # Cache the response
+        await redis.setex(
+            f"sonarr_show_{series_id}",
             CACHE_TTL,
             json.dumps(data)
         )
@@ -92,6 +117,15 @@ async def list_shows(page: int = 1, page_size: int = 20):
         "results": paginated_shows
     }
 
+@app.get("/shows/{series_id}", summary="Get show details", description="Fetches detailed information for a specific show.")
+async def get_show_details(series_id: int):
+    try:
+        return await fetch_show_details(series_id)
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Show not found")
+        raise HTTPException(status_code=500, detail="Error fetching show details")
+
 @app.get("/shows/{series_id}/episodes", summary="Get all episodes for a series", description="Fetches all episodes for a given series ID.")
 async def get_combined_episode_data(series_id: int):
     async with httpx.AsyncClient() as client:
@@ -106,33 +140,39 @@ async def get_combined_episode_data(series_id: int):
         episodes = ep_response.json()
         episode_files = {f["id"]: f for f in file_response.json()}
 
-        combined = []
-        for ep in episodes:
-            if not ep.get("hasFile"):
-                continue
-            file_data = episode_files.get(ep["episodeFileId"])
-            if not file_data:
-                continue
+    combined = []
+    for ep in episodes:
+        has_file = ep.get("hasFile", False)
+        
+        if not has_file:
+            continue
+            
+        file_data = episode_files.get(ep.get("episodeFileId"))
+        if not file_data:
+            print(f"  No file data found for episodeFileId: {ep.get('episodeFileId')}")
+            continue
 
-            combined.append({
-                "season": ep["seasonNumber"],
-                "episode": ep["episodeNumber"],
-                "title": ep["title"],
-                "airDate": ep["airDate"],
-                "overview": ep["overview"],
-                "filePath": file_data["path"],
-                "relativePath": file_data["relativePath"],
-                "size": file_data["size"],
-                "quality": file_data["quality"]["quality"]["name"],
-                "videoCodec": file_data["mediaInfo"]["videoCodec"],
-                "audioCodec": file_data["mediaInfo"]["audioCodec"],
-                "audioChannels": file_data["mediaInfo"]["audioChannels"],
-                "resolution": file_data["mediaInfo"]["resolution"],
-                "runtime": file_data["mediaInfo"]["runTime"],
-                "subtitles": file_data["mediaInfo"]["subtitles"],
-            })
+        episode_data = {
+            "season": ep.get("seasonNumber", 0),
+            "episode": ep.get("episodeNumber", 0),
+            "title": ep.get("title", "Unknown"),
+            "airDate": ep.get("airDate", None),
+            "overview": ep.get("overview", ""),
+            "filePath": file_data.get("path"),
+            "relativePath": file_data.get("relativePath"),
+            "size": file_data.get("size"),
+            "quality": file_data.get("quality", {}).get("quality", {}).get("name"),
+            "videoCodec": file_data.get("mediaInfo", {}).get("videoCodec"),
+            "audioCodec": file_data.get("mediaInfo", {}).get("audioCodec"),
+            "audioChannels": file_data.get("mediaInfo", {}).get("audioChannels"),
+            "resolution": file_data.get("mediaInfo", {}).get("resolution"),
+            "runtime": file_data.get("mediaInfo", {}).get("runTime"),
+            "subtitles": file_data.get("mediaInfo", {}).get("subtitles"),
+        }
 
-        return sorted(combined, key=lambda x: (x["season"], x["episode"]))
+        combined.append(episode_data)
+
+    return sorted(combined, key=lambda x: (x["season"], x["episode"]))
 
 @app.get("/stream/{series_id}/{season}/{file_name}", summary="Stream media file", description="Streams a media file using HTTP byte-range support.")
 async def stream_file(series_id: int, season: str, file_name: str, request: Request):
