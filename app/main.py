@@ -221,3 +221,11 @@ async def stream_file(series_id: int, season: str, file_name: str, request: Requ
         }
 
         return StreamingResponse(content(), headers=headers)
+
+@app.get("/cache/clear", summary="Clear all cache", description="Clears all cached data from Redis.")
+async def clear_cache():
+    try:
+        await redis.flushall()
+        return {"message": "Cache cleared successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error clearing cache: {str(e)}")
