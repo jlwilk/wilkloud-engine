@@ -7,6 +7,9 @@ from dotenv import load_dotenv
 from os import getenv
 from starlette.responses import StreamingResponse
 import aiofiles
+import json
+from redis.asyncio import Redis
+from datetime import timedelta
 
 load_dotenv()
 
@@ -15,6 +18,14 @@ app = FastAPI(
     description="API to interface with Sonarr for listing shows, episodes, and streaming media files.",
     version="1.0.0"
 )
+
+# Redis configuration
+REDIS_URL = getenv("REDIS_URL", "redis://localhost:6379")
+redis = Redis.from_url(REDIS_URL, decode_responses=True)
+
+# Cache configuration
+CACHE_TTL = timedelta(minutes=30)  # Cache for 30 minutes
+CACHE_KEY = "sonarr_series"
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,10 +45,25 @@ headers = {
 }
 
 async def fetch_sonarr_series():
+    # Try to get from cache first
+    cached_data = await redis.get(CACHE_KEY)
+    if cached_data:
+        return json.loads(cached_data)
+
+    # If not in cache, fetch from Sonarr
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{SONARR_URL}/api/v3/series", headers=headers)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        
+        # Cache the response
+        await redis.setex(
+            CACHE_KEY,
+            CACHE_TTL,
+            json.dumps(data)
+        )
+        
+        return data
 
 WHITELISTED_IPS = ["127.0.0.1", "192.168.0.48", "172.17.46.123"]
 
@@ -49,9 +75,22 @@ async def ip_whitelist(request: Request, call_next):
     response = await call_next(request)
     return response
 
-@app.get("/shows", summary="List all shows", description="Fetches all shows from the configured Sonarr instance.")
-async def list_shows():
-    return await fetch_sonarr_series()
+@app.get("/shows", summary="List all shows", description="Fetches all shows from the configured Sonarr instance with pagination support.")
+async def list_shows(page: int = 1, page_size: int = 20):
+    all_shows = await fetch_sonarr_series()
+
+    total = len(all_shows)
+    start = (page - 1) * page_size
+    end = start + page_size
+    paginated_shows = all_shows[start:end]
+
+    return {
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": (total + page_size - 1) // page_size,
+        "results": paginated_shows
+    }
 
 @app.get("/shows/{series_id}/episodes", summary="Get all episodes for a series", description="Fetches all episodes for a given series ID.")
 async def get_combined_episode_data(series_id: int):

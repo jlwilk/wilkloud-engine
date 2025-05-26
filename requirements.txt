@@ -5,3 +5,5 @@ python-dotenv
 ffmpeg-python
 httpx
 aiofiles
+redis
+aioredis
