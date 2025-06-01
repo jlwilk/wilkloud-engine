@@ -10,6 +10,7 @@ import aiofiles
 import json
 from redis.asyncio import Redis
 from datetime import timedelta
+import mimetypes
 
 load_dotenv()
 
@@ -176,16 +177,18 @@ async def get_combined_episode_data(series_id: int):
 
 @app.get("/stream/{series_id}/{season}/{episode}", summary="Stream media file", description="Streams a media file using HTTP byte-range support.")
 async def stream_file(series_id: int, season: int, episode: int, request: Request):
-
-    # Get the episode details
     episode_details = await get_combined_episode_data(series_id)
     episode_details = [ep for ep in episode_details if ep["season"] == season and ep["episode"] == episode]
     if not episode_details:
         raise HTTPException(status_code=404, detail="Episode not found")
-    file_path = episode_details[0]["filePath"]
 
+    file_path = episode_details[0]["filePath"]
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
+
+    content_type, _ = mimetypes.guess_type(file_path)
+    if not content_type:
+        content_type = "video/mp4"
 
     file_size = os.path.getsize(file_path)
     range_header = request.headers.get("range")
@@ -197,6 +200,15 @@ async def stream_file(series_id: int, season: int, episode: int, request: Reques
         end = int(end_str) if end_str else file_size - 1
         return start, end
 
+    common_headers = {
+        "Content-Type": content_type,
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": "inline",
+        "Cache-Control": "no-cache",
+        "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length, Content-Type, Content-Disposition",
+        "Access-Control-Allow-Origin": "*",
+    }
+
     if range_header:
         start, end = parse_range(range_header)
         length = end - start + 1
@@ -204,13 +216,19 @@ async def stream_file(series_id: int, season: int, episode: int, request: Reques
         async def content():
             async with aiofiles.open(file_path, 'rb') as f:
                 await f.seek(start)
-                yield await f.read(length)
+                remaining = length
+                while remaining > 0:
+                    chunk_size = min(1024 * 1024, remaining)
+                    chunk = await f.read(chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk
+                    remaining -= len(chunk)
 
         headers = {
+            **common_headers,
             "Content-Range": f"bytes {start}-{end}/{file_size}",
-            "Accept-Ranges": "bytes",
             "Content-Length": str(length),
-            "Content-Type": "video/mp4"
         }
 
         return StreamingResponse(content(), status_code=206, headers=headers)
@@ -218,11 +236,15 @@ async def stream_file(series_id: int, season: int, episode: int, request: Reques
     else:
         async def content():
             async with aiofiles.open(file_path, 'rb') as f:
-                yield await f.read()
+                while True:
+                    chunk = await f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
 
         headers = {
+            **common_headers,
             "Content-Length": str(file_size),
-            "Content-Type": "video/mp4"
         }
 
         return StreamingResponse(content(), headers=headers)
