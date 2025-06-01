@@ -174,10 +174,15 @@ async def get_combined_episode_data(series_id: int):
 
     return sorted(combined, key=lambda x: (x["season"], x["episode"]))
 
-@app.get("/stream/{series_id}/{season}/{file_name}", summary="Stream media file", description="Streams a media file using HTTP byte-range support.")
-async def stream_file(series_id: int, season: str, file_name: str, request: Request):
-    media_root = "/Users/jason/Media/tv"
-    file_path = os.path.join(media_root, str(series_id), season, file_name)
+@app.get("/stream/{series_id}/{season}/{episode}", summary="Stream media file", description="Streams a media file using HTTP byte-range support.")
+async def stream_file(series_id: int, season: int, episode: int, request: Request):
+
+    # Get the episode details
+    episode_details = await get_combined_episode_data(series_id)
+    episode_details = [ep for ep in episode_details if ep["season"] == season and ep["episode"] == episode]
+    if not episode_details:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    file_path = episode_details[0]["filePath"]
 
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
