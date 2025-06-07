@@ -117,7 +117,7 @@ async def list_shows(page: int = 1, page_size: int = 20):
         "results": paginated_shows
     }
 
-@app.get("/shows/{series_id}", summary="Get show details", description="Fetches detailed information for a specific show.")
+@app.get("/show/{series_id}", summary="Get show details", description="Fetches detailed information for a specific show.")
 async def get_show_details(series_id: int):
     try:
         return await fetch_show_details(series_id)
@@ -126,7 +126,7 @@ async def get_show_details(series_id: int):
             raise HTTPException(status_code=404, detail="Show not found")
         raise HTTPException(status_code=500, detail="Error fetching show details")
 
-@app.get("/shows/{series_id}/episodes", summary="Get all episodes for a series", description="Fetches all episodes for a given series ID.")
+@app.get("/show/{series_id}/episodes", summary="Get all episodes for a series", description="Fetches all episodes for a given series ID.")
 async def get_combined_episode_data(series_id: int):
     async with httpx.AsyncClient() as client:
         ep_response = await client.get(f"{SONARR_URL}/api/v3/episode?seriesId={series_id}", headers=headers)
