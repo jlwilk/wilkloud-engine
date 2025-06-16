@@ -234,3 +234,43 @@ async def clear_cache():
         return {"message": "Cache cleared successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error clearing cache: {str(e)}")
+
+@app.get("/health", summary="Health check for Redis and Sonarr", description="Checks if Redis and Sonarr are running and reachable.")
+async def health_check():
+    redis_status = "unknown"
+    sonarr_status = "unknown"
+    try:
+        pong = await redis.ping()
+        redis_status = "ok" if pong else "unreachable"
+    except Exception as e:
+        redis_status = f"error: {str(e)}"
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{SONARR_URL}/api/v3/system/status", headers=headers, timeout=5)
+            if response.status_code == 200:
+                sonarr_status = "ok"
+            else:
+                sonarr_status = f"error: status {response.status_code}"
+    except Exception as e:
+        sonarr_status = f"error: {str(e)}"
+    return {"redis": redis_status, "sonarr": sonarr_status}
+
+@app.on_event("startup")
+async def check_services_on_startup():
+    redis_status = "unknown"
+    sonarr_status = "unknown"
+    try:
+        pong = await redis.ping()
+        redis_status = "ok" if pong else "unreachable"
+    except Exception as e:
+        redis_status = f"error: {str(e)}"
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{SONARR_URL}/api/v3/system/status", headers=headers, timeout=5)
+            if response.status_code == 200:
+                sonarr_status = "ok"
+            else:
+                sonarr_status = f"error: status {response.status_code}"
+    except Exception as e:
+        sonarr_status = f"error: {str(e)}"
+    print(f"[Startup Health Check] Redis: {redis_status}, Sonarr: {sonarr_status}")
