@@ -90,7 +90,7 @@ async def fetch_show_details(series_id: int):
         
         return data
 
-WHITELISTED_IPS = ["127.0.0.1", "192.168.0.48", "172.17.46.123"]
+WHITELISTED_IPS = ["127.0.0.1", "192.168.0.55", "192.168.0.48", "192.168.0.197"]
 
 @app.middleware("http")
 async def ip_whitelist(request: Request, call_next):
