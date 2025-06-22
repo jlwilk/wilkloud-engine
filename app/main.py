@@ -80,15 +80,56 @@ async def fetch_show_details(series_id: int):
         response = await client.get(f"{SONARR_URL}/api/v3/series/{series_id}", headers=headers)
         response.raise_for_status()
         data = response.json()
-        
-        # Cache the response
+
+        # Clean up the seasons data
+        if 'seasons' in data and isinstance(data['seasons'], list):
+            # Filter out seasons with no episode files
+            data['seasons'] = [
+                season for season in data['seasons']
+                if season.get('statistics', {}).get('episodeFileCount', 0) > 0
+            ]
+
+        # Sanitize the show data
+        data = _sanitize_show_data(data)
+
+        # Cache the cleaned response
         await redis.setex(
             f"sonarr_show_{series_id}",
             CACHE_TTL,
             json.dumps(data)
         )
-        
+
         return data
+    
+def _sanitize_show_data(show_data: dict) -> dict:
+    # Remove the local 'url' from images
+    if 'images' in show_data and isinstance(show_data.get('images'), list):
+        for image in show_data['images']:
+            image.pop('url', None)
+            
+    # Remove 'releaseGroups' from top level stats
+    if 'statistics' in show_data and isinstance(show_data.get('statistics'), list):
+        for statistic in show_data['statistics']:
+            statistic.pop('releaseGroups', None)
+            
+    # Remove 'releaseGroups' from season level stats
+    # if 'seasons' in show_data and isinstance(show_data['seasons'], list):
+    #         # Filter out seasons with no episode files
+    #         show_data['seasons'] = [
+    #             season for season in show_data['seasons']
+    #                 seasons.pop('releaseGroups', None)
+    #         ]
+
+    # Remove unnecessary fields
+    fields_to_remove = [
+        'path', 'monitored', 'tags', 'qualityProfileId', 'rootFolderPath', 
+        'seasonFolder', 'useSceneNumbering', 'status', 'cleanTitle', 'titleSlug',
+        'rootFolderPath', 'monitorNewItems', 'languageProfileId'
+    ]
+    for field in fields_to_remove:
+        show_data.pop(field, None)
+    
+    return show_data
 
 WHITELISTED_IPS = ["127.0.0.1", "192.168.0.55", "192.168.0.48", "192.168.0.197"]
 
