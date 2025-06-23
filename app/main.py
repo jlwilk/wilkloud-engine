@@ -108,17 +108,14 @@ def _sanitize_show_data(show_data: dict) -> dict:
             image.pop('url', None)
             
     # Remove 'releaseGroups' from top level stats
-    if 'statistics' in show_data and isinstance(show_data.get('statistics'), list):
-        for statistic in show_data['statistics']:
-            statistic.pop('releaseGroups', None)
+    if show_data.get('statistics'):
+        show_data['statistics'].pop('releaseGroups', None)
+
             
     # Remove 'releaseGroups' from season level stats
-    # if 'seasons' in show_data and isinstance(show_data['seasons'], list):
-    #         # Filter out seasons with no episode files
-    #         show_data['seasons'] = [
-    #             season for season in show_data['seasons']
-    #                 seasons.pop('releaseGroups', None)
-    #         ]
+    if 'seasons' in show_data and isinstance(show_data['seasons'], list):
+        for season in show_data.get('seasons', []):
+            season.get('statistics', {}).pop('releaseGroups', None)
 
     # Remove unnecessary fields
     fields_to_remove = [
