@@ -138,22 +138,28 @@ async def ip_whitelist(request: Request, call_next):
     response = await call_next(request)
     return response
 
-@app.get("/shows", summary="List all shows", description="Fetches all shows from the configured Sonarr instance with pagination support.")
-async def list_shows(page: int = 1, page_size: int = 20):
+# @app.get("/shows", summary="List all shows", description="Fetches all shows from the configured Sonarr instance with pagination support.")
+# async def list_shows(page: int = 1, page_size: int = 20):
+#     all_shows = await fetch_sonarr_series()
+
+#     total = len(all_shows)
+#     start = (page - 1) * page_size
+#     end = start + page_size
+#     paginated_shows = all_shows[start:end]
+
+#     return {
+#         "page": page,
+#         "page_size": page_size,
+#         "total": total,
+#         "total_pages": (total + page_size - 1) // page_size,
+#         "results": paginated_shows
+#     }
+
+@app.get("/shows", summary="List all shows", description="Fetches all shows from the configured Sonarr instance.")
+async def list_shows():
     all_shows = await fetch_sonarr_series()
 
-    total = len(all_shows)
-    start = (page - 1) * page_size
-    end = start + page_size
-    paginated_shows = all_shows[start:end]
-
-    return {
-        "page": page,
-        "page_size": page_size,
-        "total": total,
-        "total_pages": (total + page_size - 1) // page_size,
-        "results": paginated_shows
-    }
+    return all_shows
 
 @app.get("/show/{series_id}", summary="Get show details", description="Fetches detailed information for a specific show.")
 async def get_show_details(series_id: int):
